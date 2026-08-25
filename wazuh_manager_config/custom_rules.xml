@@ -1,0 +1,52 @@
+<!-- ================================================================
+     Reglas personalizadas para alertas del Ensemble de Anomalías
+     Archivo: /var/ossec/etc/rules/custom_rules.xml
+
+     Niveles Wazuh:
+       7  → Sospechoso  (score ≥ 0.70)
+       10 → Probable ataque (score ≥ 0.85)
+       13 → Ataque confirmado (score ≥ 0.95)
+     ================================================================ -->
+<group name="ensemble_anomaly,">
+
+  <!-- Regla base: cualquier alerta del ensemble -->
+  <rule id="100001" level="5">
+    <decoded_as>json</decoded_as>
+    <field name="source">^ensemble$</field>
+    <description>Ensemble IDS: flujo anómalo detectado (score: $(score))</description>
+    <group>anomaly_detection,</group>
+  </rule>
+
+  <!-- Nivel 7: Sospechoso -->
+  <rule id="100002" level="7">
+    <if_sid>100001</if_sid>
+    <field name="score" type="pcre2">^0\.[7-8]\d</field>
+    <description>Ensemble IDS: Tráfico sospechoso desde $(src_ip) → $(dst_ip) [score=$(score)]</description>
+    <group>anomaly_detection,suspicious,</group>
+  </rule>
+
+  <!-- Nivel 10: Probable ataque -->
+  <rule id="100003" level="10">
+    <if_sid>100001</if_sid>
+    <field name="score" type="pcre2">^0\.9[0-4]</field>
+    <description>Ensemble IDS: Probable ataque desde $(src_ip) → $(dst_ip) [score=$(score), proto=$(protocol)]</description>
+    <group>anomaly_detection,attack,</group>
+  </rule>
+
+  <!-- Nivel 13: Ataque confirmado (score ≥ 0.95) -->
+  <rule id="100004" level="13">
+    <if_sid>100001</if_sid>
+    <field name="score" type="pcre2">^0\.9[5-9]|^1\.0</field>
+    <description>Ensemble IDS: ATAQUE CONFIRMADO desde $(src_ip) [score=$(score), proto=$(protocol), duración=$(duration_ms)ms]</description>
+    <group>anomaly_detection,attack,high_confidence,</group>
+  </rule>
+
+  <!-- Regla especial: evasión detectada (RF falló, ensemble detectó) -->
+  <rule id="100005" level="12">
+    <if_sid>100001</if_sid>
+    <field name="evasion_attempt">true</field>
+    <description>Ensemble IDS: POSIBLE INTENTO DE EVASIÓN detectado desde $(src_ip) — modelo supervisado lo clasificó como normal</description>
+    <group>anomaly_detection,evasion,</group>
+  </rule>
+
+</group>

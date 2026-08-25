@@ -1,0 +1,18 @@
+<!-- ================================================================
+     Decoder personalizado para alertas del Ensemble de Anomalías
+     Archivo: /var/ossec/etc/decoders/custom_decoder.xml
+     ================================================================ -->
+
+  <!-- Decoder raíz: identifica líneas del ensemble -->
+  <decoder name="ensemble_anomaly">
+    <prematch>{"source":"ensemble"</prematch>
+  </decoder>
+
+  <!-- Decoder hijo: extrae campos del JSON -->
+  <decoder name="ensemble_anomaly_fields">
+    <parent>ensemble_anomaly</parent>
+    <use_own_name>true</use_own_name>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+  </decoder>
+
+
