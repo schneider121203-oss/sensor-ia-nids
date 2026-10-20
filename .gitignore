@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+sensor/venv/
+*.log
+
+# Artefactos de investigación que no se despliegan.
+sensor/model_archive/
+sensor/models_v2_candidate/
+sensor/models_v3_candidate/
+sensor/models_v3_py310_candidate/
+sensor/models_v4_candidate/
+sensor/models_v4_frozen/
+sensor/models_v4_native_candidate/
+
+# Capturas, datasets y secretos nunca deben versionarse.
+*.pcap
+*.pcapng
+*.ndjson
+*.pem
+*.key
+*.crt
+*.p12
+*.env
+!config/sensor.env.example

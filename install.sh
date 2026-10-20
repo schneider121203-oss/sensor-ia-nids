@@ -1,195 +1,189 @@
-#!/bin/bash
-# ================================================================
-#  install.sh — Instalador del Sensor IA NIDS
-#  Tesis: Sistema de Detección de Intrusos basado en
-#         Ensemble No Supervisado con Integración SIEM
-#  Autor: Jorge D. Salinas R. — FISI
-#
-#  Uso:
-#    sudo bash install.sh --wazuh-ip <IP_WAZUH_MANAGER> [opciones]
-#
-#  Ejemplo:
-#    sudo bash install.sh --wazuh-ip 192.168.10.50
-#    sudo bash install.sh --wazuh-ip 192.168.10.50 --iface eth0
-#
-#  Parámetros:
-#    --wazuh-ip    IP del Wazuh Manager de la FISI [REQUERIDO]
-#    --agent-name  Nombre del agente (default: sensor-ia-nids-jds)
-#    --iface       Interfaz del puerto espejo (default: se detecta sola)
-# ================================================================
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-set -e
+INSTALL_DIR=/opt/sensor-ia-nids
+CONFIG_DIR=/etc/sensor-ia-nids
+DATA_DIR=/var/lib/sensor-ia-nids
+ALERT_DIR=/var/log/ensemble
+SERVICE_FILE=/etc/systemd/system/sensor-ia-nids.service
+RUN_USER=sensor-nids
+RUN_GROUP=sensor-nids
 
-# ── Defaults ─────────────────────────────────────────────────────
-WAZUH_IP=""
-AGENT_NAME="sensor-ia-nids-jds"
-IFACE=""
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-SENSOR_DIR="$SCRIPT_DIR/sensor"
-LOG_DIR="/var/log/ensemble"
-SYSTEMD_SERVICE="/etc/systemd/system/sensor-ia-nids.service"
+CAPTURE_IFACE=
+WAZUH_MANAGER=
+AGENT_NAME=sensor-ia-nids-fisi
+WAZUH_VERSION=
+SKIP_WAZUH_INSTALL=false
+NO_START=false
+BPF_FILTER=
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# ── Colores ──────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
-info()    { echo -e "${GREEN}[✓]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[~]${NC} $1"; }
-step()    { echo -e "${CYAN}${BOLD}[→]${NC} $1"; }
-error()   { echo -e "${RED}[✗] ERROR:${NC} $1"; exit 1; }
+usage() {
+  cat <<'EOF'
+Uso:
+  sudo bash install.sh --iface INTERFAZ --wazuh-manager IP_O_FQDN [opciones]
 
-# ── Parsear argumentos ───────────────────────────────────────────
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --wazuh-ip)    WAZUH_IP="$2";    shift 2 ;;
-        --agent-name)  AGENT_NAME="$2";  shift 2 ;;
-        --iface)       IFACE="$2";       shift 2 ;;
-        *) error "Argumento desconocido: $1" ;;
-    esac
+Obligatorios:
+  --iface INTERFAZ          NIC conectada al puerto SPAN; nunca se autodetecta
+  --wazuh-manager HOST      IP o FQDN del Wazuh Manager existente
+
+Opciones:
+  --agent-name NOMBRE       Nombre del Wazuh Agent
+  --wazuh-version VERSION   Versión DEB compatible, por ejemplo 4.14.9-1
+  --bpf-filter EXPRESION    Filtro BPF opcional
+  --skip-wazuh-install      No instala el agente; configura uno existente si lo hay
+  --no-start                Instala y habilita sin iniciar servicios
+  -h, --help                Muestra esta ayuda
+EOF
+}
+
+die() { echo "[ERROR] $*" >&2; exit 1; }
+info() { echo "[OK] $*"; }
+warn() { echo "[ADVERTENCIA] $*" >&2; }
+
+while (($#)); do
+  case "$1" in
+    --iface) [[ $# -ge 2 ]] || die "Falta valor para --iface"; CAPTURE_IFACE=$2; shift 2 ;;
+    --wazuh-manager) [[ $# -ge 2 ]] || die "Falta valor para --wazuh-manager"; WAZUH_MANAGER=$2; shift 2 ;;
+    --agent-name) [[ $# -ge 2 ]] || die "Falta valor para --agent-name"; AGENT_NAME=$2; shift 2 ;;
+    --wazuh-version) [[ $# -ge 2 ]] || die "Falta valor para --wazuh-version"; WAZUH_VERSION=$2; shift 2 ;;
+    --bpf-filter) [[ $# -ge 2 ]] || die "Falta valor para --bpf-filter"; BPF_FILTER=$2; shift 2 ;;
+    --skip-wazuh-install) SKIP_WAZUH_INSTALL=true; shift ;;
+    --no-start) NO_START=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Opción desconocida: $1" ;;
+  esac
 done
 
-echo ""
-echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🛡️  Sensor IA NIDS — Instalador v1.0${NC}"
-echo -e "${BOLD}  Tesis JDSR — Integración SIEM Wazuh FISI${NC}"
-echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
-echo ""
+[[ $(id -u) -eq 0 ]] || die "Ejecuta el instalador con sudo"
+[[ -n "$CAPTURE_IFACE" ]] || die "--iface es obligatorio"
+[[ -n "$WAZUH_MANAGER" ]] || die "--wazuh-manager es obligatorio"
+[[ "$CAPTURE_IFACE" =~ ^[A-Za-z0-9_.:-]+$ ]] || die "Nombre de interfaz inválido"
+[[ "$WAZUH_MANAGER" =~ ^[A-Za-z0-9_.:-]+$ ]] || die "Dirección del Wazuh Manager inválida"
+[[ "$AGENT_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "Nombre de agente inválido"
+[[ -d "$SCRIPT_DIR/sensor" && -d "$SCRIPT_DIR/sensor/models" ]] || die "Repositorio incompleto"
 
-# ── Validaciones ─────────────────────────────────────────────────
-[[ "$(id -u)" -ne 0 ]] && error "Ejecuta como root: sudo bash install.sh --wazuh-ip <IP>"
-[[ -z "$WAZUH_IP" ]]   && error "Debes pasar la IP del Wazuh Manager.\n  Ejemplo: sudo bash install.sh --wazuh-ip 192.168.10.50"
-[[ ! -d "$SENSOR_DIR" ]] && error "No se encontró la carpeta sensor/. Ejecuta desde el directorio del instalador."
+# shellcheck disable=SC1091
+source /etc/os-release
+[[ ${ID:-} == ubuntu && ${VERSION_ID:-} == 22.04 ]] || \
+  die "Este instalador soporta Ubuntu 22.04 LTS; detectado: ${PRETTY_NAME:-desconocido}"
 
-info "Wazuh Manager IP: $WAZUH_IP"
-info "Nombre del agente: $AGENT_NAME"
-
-# ── Auto-detectar interfaz de red si no se especificó ────────────
-if [[ -z "$IFACE" ]]; then
-    IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-    warn "Interfaz auto-detectada: $IFACE (puedes cambiarla con --iface)"
+echo "Sensor IA/NIDS v4 — instalación idempotente"
+echo "Interfaz SPAN: $CAPTURE_IFACE"
+echo "Wazuh Manager: $WAZUH_MANAGER"
+if [[ -z "$WAZUH_VERSION" && "$SKIP_WAZUH_INSTALL" == false ]]; then
+  warn "No se fijó --wazuh-version; se instalará la disponible en el repositorio. Confirma que el Manager sea igual o más reciente."
 fi
-info "Interfaz de red del puerto espejo: $IFACE"
-echo ""
 
-# ── PASO 1: Dependencias del sistema ─────────────────────────────
-step "Instalando dependencias del sistema..."
-apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv \
-    libpcap-dev libpcap0.8 curl gnupg lsb-release gcc
-info "Dependencias del sistema instaladas."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends \
+  python3 python3-venv python3-pip iproute2 libpcap-dev libpcap0.8 gcc g++ \
+  curl gnupg apt-transport-https ca-certificates logrotate
+[[ $(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")') == 3.10 ]] || \
+  die "Se requiere Python 3.10, incluido por defecto en Ubuntu 22.04 LTS"
+ip link show "$CAPTURE_IFACE" >/dev/null 2>&1 || die "No existe la interfaz $CAPTURE_IFACE"
 
-# ── PASO 2: Entorno virtual Python + librerías IA ────────────────
-step "Creando entorno virtual Python e instalando librerías IA..."
-python3 -m venv "$SENSOR_DIR/venv"
-"$SENSOR_DIR/venv/bin/pip" install --upgrade pip -q
-"$SENSOR_DIR/venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt" -q
-info "Librerías IA instaladas (NFStream, scikit-learn, PyTorch, EIF)."
+if ! id "$RUN_USER" >/dev/null 2>&1; then
+  useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin "$RUN_USER"
+fi
 
-# ── PASO 3: Directorio de alertas JSON ───────────────────────────
-step "Creando directorio de alertas..."
-mkdir -p "$LOG_DIR"
-touch "$LOG_DIR/alerts.json"
-chmod 777 "$LOG_DIR/alerts.json"
-info "Directorio $LOG_DIR listo."
+install_wazuh_agent() {
+  if dpkg-query -W -f='${Status}' wazuh-agent 2>/dev/null | grep -q 'install ok installed'; then
+    info "Wazuh Agent ya está instalado"
+    return
+  fi
+  if [[ "$SKIP_WAZUH_INSTALL" == true ]]; then
+    warn "Se omitió la instalación de Wazuh Agent"
+    return
+  fi
 
-# ── PASO 4: Instalar Wazuh Agent 4.9.2 ──────────────────────────
-step "Instalando Wazuh Agent 4.9.2..."
-curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH \
-    | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
-echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] \
-https://packages.wazuh.com/4.x/apt/ stable main" \
-    | tee /etc/apt/sources.list.d/wazuh.list > /dev/null
-apt-get update -qq
+  install -d -m 0755 /usr/share/keyrings
+  rm -f /usr/share/keyrings/wazuh.gpg
+  curl --fail --silent --show-error https://packages.wazuh.com/key/GPG-KEY-WAZUH \
+    | gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import
+  chmod 0644 /usr/share/keyrings/wazuh.gpg
+  printf '%s\n' 'deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main' \
+    >/etc/apt/sources.list.d/wazuh.list
+  apt-get update
 
-# Configurar variables de entorno para el instalador de Wazuh
-WAZUH_MANAGER="$WAZUH_IP" \
-WAZUH_MANAGER_PORT="1514" \
-WAZUH_AGENT_NAME="$AGENT_NAME" \
-    apt-get install -y -qq wazuh-agent=4.9.2-1
-info "Wazuh Agent instalado → apuntando a $WAZUH_IP:1514"
+  package=wazuh-agent
+  [[ -z "$WAZUH_VERSION" ]] || package="wazuh-agent=$WAZUH_VERSION"
+  WAZUH_MANAGER="$WAZUH_MANAGER" WAZUH_AGENT_NAME="$AGENT_NAME" \
+    apt-get install -y "$package"
+  apt-mark hold wazuh-agent >/dev/null
+  info "Wazuh Agent instalado y retenido para evitar actualizaciones incompatibles"
+}
 
-# ── PASO 5: Configurar lectura del log JSON de la IA ─────────────
-step "Configurando Wazuh Agent para leer alertas de la IA..."
-AGENT_CONF="/var/ossec/etc/ossec.conf"
+install_wazuh_agent
+"$SCRIPT_DIR/scripts/verify_model.py" --models-dir "$SCRIPT_DIR/sensor/models"
 
-python3 - <<PYEOF
-import re
+install -d -m 0755 "$INSTALL_DIR/app" "$INSTALL_DIR/models" "$INSTALL_DIR/scripts"
+runtime_files=(
+  ensemble_predictor.py feature_adapter.py feature_contract.py
+  feature_contract_v4_native.py flow_monitor_v4.py
+  nfstream_extractor.py nfstream_native_extractor.py
+)
+for filename in "${runtime_files[@]}"; do
+  install -m 0644 "$SCRIPT_DIR/sensor/$filename" "$INSTALL_DIR/app/$filename"
+done
+install -m 0644 "$SCRIPT_DIR"/sensor/models/* "$INSTALL_DIR/models/"
+install -m 0755 "$SCRIPT_DIR/scripts/run_sensor.sh" "$INSTALL_DIR/scripts/run_sensor.sh"
+install -m 0755 "$SCRIPT_DIR/scripts/verify_model.py" "$INSTALL_DIR/scripts/verify_model.py"
+install -m 0644 "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 
-with open("$AGENT_CONF", "r") as f:
-    content = f.read()
+if [[ ! -x "$INSTALL_DIR/venv/bin/python" ]]; then
+  python3 -m venv "$INSTALL_DIR/venv"
+fi
+"$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check --upgrade pip
+"$INSTALL_DIR/venv/bin/pip" install --requirement "$INSTALL_DIR/requirements.txt"
+"$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/scripts/verify_model.py" \
+  --models-dir "$INSTALL_DIR/models"
 
-localfile_block = """
-  <!-- ===================================================== -->
-  <!-- Sensor IA NIDS — Alertas JSON (Tesis JDSR)            -->
-  <!-- ===================================================== -->
-  <localfile>
-    <log_format>json</log_format>
-    <location>$LOG_DIR/alerts.json</location>
-  </localfile>
+install -d -o root -g "$RUN_GROUP" -m 0750 "$CONFIG_DIR"
+install -d -o "$RUN_USER" -g "$RUN_GROUP" -m 0750 "$DATA_DIR" "$ALERT_DIR"
+touch "$ALERT_DIR/alerts.json"
+chown "$RUN_USER:$RUN_GROUP" "$ALERT_DIR/alerts.json"
+chmod 0640 "$ALERT_DIR/alerts.json"
 
-"""
+{
+  printf 'CAPTURE_INTERFACE=%q\n' "$CAPTURE_IFACE"
+  printf 'BPF_FILTER=%q\n' "$BPF_FILTER"
+  printf 'INSTALL_DIR=%q\n' "$INSTALL_DIR"
+  printf 'DATA_DIR=%q\n' "$DATA_DIR"
+  printf 'ALERT_LOG=%q\n' "$ALERT_DIR/alerts.json"
+  printf 'RUN_ID=%q\n' "fisi-live-$(hostname -s)"
+  printf 'ORDERING_DELAY_MS=6000\nBATCH_SIZE=100\n'
+} >"$CONFIG_DIR/sensor.env"
+chown root:"$RUN_GROUP" "$CONFIG_DIR/sensor.env"
+chmod 0640 "$CONFIG_DIR/sensor.env"
 
-if "alerts.json" not in content:
-    content = content.replace("</ossec_config>", localfile_block + "</ossec_config>")
-    with open("$AGENT_CONF", "w") as f:
-        f.write(content)
-    print("  → Bloque <localfile> insertado en ossec.conf")
-else:
-    print("  → El bloque <localfile> ya existía. Sin cambios.")
-PYEOF
+install -m 0644 "$SCRIPT_DIR/deploy/systemd/sensor-ia-nids.service" "$SERVICE_FILE"
+install -m 0644 "$SCRIPT_DIR/deploy/logrotate/sensor-ia-nids" /etc/logrotate.d/sensor-ia-nids
 
-# ── PASO 6: Crear servicio systemd para el sensor IA ─────────────
-step "Creando servicio systemd para el sensor IA..."
-cat > "$SYSTEMD_SERVICE" <<EOF
-[Unit]
-Description=Sensor IA NIDS — Tesis JDSR
-Documentation=https://github.com/jdsr-fisi/tesis-nids
-After=network.target wazuh-agent.service
-Wants=wazuh-agent.service
+if [[ -f /var/ossec/etc/ossec.conf ]]; then
+  python3 "$SCRIPT_DIR/scripts/configure_wazuh_agent.py" \
+    --config /var/ossec/etc/ossec.conf --manager "$WAZUH_MANAGER" \
+    --alert-log "$ALERT_DIR/alerts.json"
+else
+  warn "Wazuh Agent no está instalado/configurado; el sensor funcionará localmente"
+fi
 
-[Service]
-Type=simple
-User=root
-ExecStart=$SENSOR_DIR/venv/bin/python3 $SENSOR_DIR/flow_monitor.py --iface $IFACE
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=sensor-ia-nids
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+chown -R root:root "$INSTALL_DIR"
+chmod -R go-w "$INSTALL_DIR"
 systemctl daemon-reload
-systemctl enable sensor-ia-nids
-info "Servicio sensor-ia-nids.service creado y habilitado."
+systemctl enable sensor-ia-nids.service
 
-# ── PASO 7: Registrar el agente y arrancar servicios ─────────────
-step "Iniciando servicios..."
-systemctl restart wazuh-agent
-sleep 3
-systemctl start sensor-ia-nids
-sleep 2
+if systemctl list-unit-files wazuh-agent.service --no-legend 2>/dev/null | grep -q wazuh-agent; then
+  systemctl enable wazuh-agent.service
+fi
 
-echo ""
-echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  ✅  Instalación completada exitosamente${NC}"
-echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "  ${BOLD}Estado de los servicios:${NC}"
-systemctl status wazuh-agent  --no-pager | grep -E "Active:|agent name"
-systemctl status sensor-ia-nids --no-pager | grep -E "Active:"
-echo ""
-echo -e "  ${BOLD}Para monitorear el sensor en tiempo real:${NC}"
-echo -e "    journalctl -u sensor-ia-nids -f"
-echo ""
-echo -e "  ${BOLD}Para ver las alertas JSON que envía al Wazuh:${NC}"
-echo -e "    tail -f $LOG_DIR/alerts.json"
-echo ""
-echo -e "  ${YELLOW}IMPORTANTE para el sysadmin del Wazuh Manager ($WAZUH_IP):${NC}"
-echo -e "  Instalar los archivos de la carpeta wazuh_manager_config/ en el Manager:"
-echo ""
-echo -e "    sudo cp custom_decoder.xml /var/ossec/etc/decoders/"
-echo -e "    sudo cp custom_rules.xml   /var/ossec/etc/rules/"
-echo -e "    sudo /var/ossec/bin/wazuh-control restart"
-echo ""
+if [[ "$NO_START" == false ]]; then
+  if systemctl list-unit-files wazuh-agent.service --no-legend 2>/dev/null | grep -q wazuh-agent; then
+    systemctl restart wazuh-agent.service
+  fi
+  systemctl restart sensor-ia-nids.service
+fi
+
+info "Instalación completada"
+echo "Verifica con: sudo bash $SCRIPT_DIR/scripts/verify_deployment.sh"

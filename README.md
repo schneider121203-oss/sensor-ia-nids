@@ -1,192 +1,142 @@
-# Sensor IA NIDS — Componente de Seguridad
-## Tesis de Ingeniería: Sistema de Detección de Intrusos con Ensemble No Supervisado
-**Autor:** Jorge D. Salinas R. | **Facultad:** FISI | **Año:** 2026
+# Sensor IA/NIDS para FISI-UNMSM
 
----
+Sensor pasivo de anomalías de red basado en NFStream y un ensemble no supervisado
+(Extended Isolation Forest, Autoencoder y Local Outlier Factor). Está preparado para
+una VM Ubuntu 22.04 LTS conectada a un puerto SPAN/port mirroring autorizado y envía
+únicamente las alertas JSON a un Wazuh Manager existente.
 
-## ¿Qué es este componente?
-
-Este es un **sensor de red inteligente** basado en Machine Learning que analiza el tráfico
-de red en tiempo real a través de un puerto espejo (SPAN/Mirror Port) y envía alertas de
-anomalías al Wazuh Manager existente en la infraestructura FISI.
-
-El núcleo del sistema es un **Ensemble No Supervisado** compuesto por tres algoritmos
-complementarios:
-- **Extended Isolation Forest (EIF)** — Detección de outliers basada en particionado aleatorio
-- **Autoencoder (PyTorch)** — Red neuronal de reconstrucción para detección de patrones inusuales
-- **Local Outlier Factor (LOF)** — Detección por densidad local
-
-Los tres modelos votan y producen un **score de anomalía de 0.0 a 1.0**. Si el score supera
-el umbral de 0.70, se genera una alerta JSON que el Wazuh Agent reenvía automáticamente
-al Wazuh Manager de la FISI.
-
----
+El sensor funciona en modo sombra: observa y alerta, pero no bloquea conexiones.
 
 ## Arquitectura
 
-```
-[Infraestructura de Red FISI]
-  (Servidores Web, Matrícula, etc.)
-          │
-          ▼
-  [Switch Cisco — Puerto Espejo (SPAN)]
-          │
-          ▼
-  [VM Sensor IA — sensor-ia-nids-jds]
-    ├── NFStream (captura flujos de red)
-    ├── Ensemble IA (EIF + Autoencoder + LOF)
-    ├── /var/log/ensemble/alerts.json
-    └── Wazuh Agent ──► [Wazuh Manager FISI]
-                           └── Dashboard de alertas
+```text
+Switch ── puerto SPAN ──> NIC de captura de la VM
+                              │
+                              ├─ NFStream + contrato temporal de 60 s
+                              ├─ ensemble v4 congelado (CPU)
+                              ├─ flujos/telemetría locales
+                              └─ alertas JSON ─> Wazuh Agent ─> Wazuh Manager
 ```
 
----
+Se recomienda separar la NIC de captura de la NIC de administración. La interfaz de
+captura debe indicarse explícitamente: el instalador nunca elige automáticamente la
+interfaz por defecto.
 
-## Requisitos de la VM
+## Requisitos
 
-| Recurso | Mínimo | Recomendado |
-|---------|--------|-------------|
-| OS | Ubuntu 22.04 LTS | Ubuntu 22.04 LTS |
-| CPU | 2 vCPU | 4 vCPU |
-| RAM | 2 GB | 4 GB |
-| Disco | 20 GB | 40 GB |
-| Red | 1 NIC conectada al puerto espejo | 1 NIC |
-| Internet | Requerido (solo para instalación) | — |
+| Recurso | Recomendado |
+|---|---|
+| Sistema | Ubuntu Server 22.04 LTS, x86_64 |
+| CPU | 4 vCPU; no requiere GPU |
+| RAM | 4 GB |
+| Disco | 40 GB, ampliable según retención |
+| Red | NIC de gestión y NIC de captura SPAN dedicada |
+| Wazuh | Manager existente, versión igual o posterior a la del agente |
 
----
+Requisitos de red:
 
-## Instalación
+- SPAN configurado y autorizado por el administrador del datacenter;
+- NIC de captura sin DHCP, IP ni ruta predeterminada;
+- salida desde la NIC de gestión hacia el manager por TCP/1514;
+- TCP/1515 si el manager utiliza inscripción automática;
+- NTP activo en sensor y manager.
 
-### Paso 1: Para el Sysadmin del Wazuh Manager
-
-En el servidor donde corre el **Wazuh Manager de la FISI**, copiar los archivos de la
-carpeta `wazuh_manager_config/` e instalarlos:
+## Instalación rápida
 
 ```bash
-# Copiar los archivos al servidor Wazuh Manager
-sudo cp wazuh_manager_config/custom_decoder.xml /var/ossec/etc/decoders/
-sudo cp wazuh_manager_config/custom_rules.xml   /var/ossec/etc/rules/
+git clone https://github.com/schneider121203-oss/sensor-ia-nids.git
+cd sensor-ia-nids
 
-# Verificar que los archivos son válidos
+# Revisión previa; no modifica el sistema.
+sudo bash scripts/preflight.sh \
+  --iface enp0s8 --wazuh-manager 192.168.10.50
+
+# La interfaz es obligatoria.
+sudo bash install.sh \
+  --iface enp0s8 \
+  --wazuh-manager 192.168.10.50 \
+  --agent-name sensor-ia-nids-fisi
+
+sudo bash scripts/verify_deployment.sh
+```
+
+Si el Wazuh Agent ya es administrado por la facultad:
+
+```bash
+sudo bash install.sh --iface enp0s8 --wazuh-manager 192.168.10.50 \
+  --skip-wazuh-install
+```
+
+El instalador es idempotente: se puede volver a ejecutar con los mismos parámetros para
+reparar archivos, permisos, entorno Python o servicio. No elimina evidencia existente.
+
+## Instalación en el Wazuh Manager
+
+El administrador debe comprobar primero que los IDs 110001–110004 estén libres:
+
+```bash
+sudo grep -R 'id="11000[1-4]"' /var/ossec/etc/rules
+sudo cp wazuh_manager_config/custom_rules.xml /var/ossec/etc/rules/sensor_ia_nids_rules.xml
+sudo chown root:wazuh /var/ossec/etc/rules/sensor_ia_nids_rules.xml
+sudo chmod 0640 /var/ossec/etc/rules/sensor_ia_nids_rules.xml
 sudo /var/ossec/bin/wazuh-analysisd -t
-
-# Reiniciar el Manager para aplicar
-sudo /var/ossec/bin/wazuh-control restart
 ```
 
-> **¿Qué hace cada archivo?**
-> - `custom_decoder.xml`: Enseña a Wazuh a interpretar el formato JSON de las alertas de la IA
-> - `custom_rules.xml`: Define 5 niveles de alerta (IDs 100001-100005, niveles 7-13)
+Solo después de una validación correcta debe reiniciarse el manager durante una ventana
+autorizada. El agente lee `/var/log/ensemble/alerts.json` con el decoder JSON nativo de
+Wazuh; no necesita un decoder personalizado.
 
-### Paso 2: En la VM del Sensor
+La instalación oficial del agente usa variables de despliegue y recomienda que el
+manager sea igual o más reciente que el agente:
+[documentación oficial de Wazuh](https://documentation.wazuh.com/current/installation-guide/wazuh-agent/wazuh-agent-package-linux.html).
+
+## Rutas instaladas
+
+| Ruta | Contenido |
+|---|---|
+| `/opt/sensor-ia-nids` | código, modelo congelado y entorno virtual |
+| `/etc/sensor-ia-nids/sensor.env` | interfaz y parámetros operativos |
+| `/var/lib/sensor-ia-nids` | flujos, telemetría y resumen |
+| `/var/log/ensemble/alerts.json` | alertas consumidas por Wazuh Agent |
+| `/etc/systemd/system/sensor-ia-nids.service` | servicio del sensor |
+
+El modelo activo es `nfstream-native-ensemble-v4-60s`, con 22 características observables,
+ventana temporal de 60 segundos, ECDF fijas y umbral congelado `0.9343915343915343`.
+`scripts/verify_model.py` valida sus hashes antes y después de instalarlo.
+
+## Operación
 
 ```bash
-# Dar permisos de ejecución al instalador
-chmod +x install.sh
-
-# Ejecutar el instalador pasándole la IP del Wazuh Manager de la FISI
-sudo bash install.sh --wazuh-ip <IP_DEL_WAZUH_MANAGER_FISI>
-
-# Ejemplo:
-sudo bash install.sh --wazuh-ip 192.168.10.50
+sudo systemctl status sensor-ia-nids wazuh-agent
+sudo journalctl -u sensor-ia-nids -f
+sudo tail -f /var/log/ensemble/alerts.json
+sudo grep '^status' /var/ossec/var/run/wazuh-agentd.state
 ```
 
-El instalador hace automáticamente:
-1. Instala dependencias del sistema (`libpcap`, `python3-venv`, `gcc`)
-2. Crea entorno virtual Python e instala librerías IA
-3. Instala y configura el **Wazuh Agent 4.9.2** apuntando al Manager indicado
-4. Configura el Agent para leer `/var/log/ensemble/alerts.json`
-5. Crea un **servicio systemd** (`sensor-ia-nids`) que arranca automáticamente con el servidor
+Para cambiar la interfaz, editar `/etc/sensor-ia-nids/sensor.env`, ejecutar
+`scripts/preflight.sh --iface NUEVA_INTERFAZ --wazuh-manager HOST` y reiniciar el
+servicio. Los logs tienen rotación configurada para proteger el disco de 40 GB.
 
-#### Parámetros opcionales:
+## Desinstalación y rollback
 
 ```bash
-# Especificar manualmente la interfaz de red del puerto espejo
-sudo bash install.sh --wazuh-ip 192.168.10.50 --iface eth1
+# Retira sensor, servicio y configuración; conserva datos y Wazuh Agent.
+sudo bash scripts/uninstall.sh
 
-# Cambiar el nombre del agente (default: sensor-ia-nids-jds)
-sudo bash install.sh --wazuh-ip 192.168.10.50 --agent-name mi-sensor
+# La opción explícita también elimina flujos y alertas locales.
+sudo bash scripts/uninstall.sh --purge-data
 ```
 
----
+El script no elimina el Wazuh Agent ni modifica el manager, porque pueden ser componentes
+institucionales compartidos.
 
-## Verificación
-
-Después de instalar, verificar que todo funciona:
+## Desarrollo
 
 ```bash
-# Ver estado del sensor IA
-sudo systemctl status sensor-ia-nids
-
-# Ver alertas en tiempo real (terminal 1)
-journalctl -u sensor-ia-nids -f
-
-# Ver JSON de alertas (terminal 2)
-tail -f /var/log/ensemble/alerts.json
-
-# Ver estado del Wazuh Agent
-sudo systemctl status wazuh-agent
-sudo /var/ossec/bin/agent_control -l   # Listar agentes registrados
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-En el Wazuh Dashboard de la FISI, el agente `sensor-ia-nids-jds` debería aparecer como
-**Active** y las alertas de la IA llegarán bajo las reglas con ID `100001` al `100005`.
-
----
-
-## Niveles de Alerta
-
-| Regla ID | Nivel Wazuh | Score IA | Descripción |
-|----------|-------------|----------|-------------|
-| 100001 | 5 (Bajo) | — | Alerta base de detección IA |
-| 100002 | 7 (Medio) | ≥ 0.70 | Tráfico sospechoso detectado |
-| 100003 | 10 (Alto) | ≥ 0.85 | Posible ataque detectado |
-| 100004 | 12 (Crítico) | ≥ 0.95 | Ataque confirmado — Score alto |
-| 100005 | 13 (Máximo) | — | Intento de evasión adversaria |
-
----
-
-## Gestión del Servicio
-
-```bash
-# Iniciar / Detener / Reiniciar el sensor
-sudo systemctl start   sensor-ia-nids
-sudo systemctl stop    sensor-ia-nids
-sudo systemctl restart sensor-ia-nids
-
-# Ver logs en tiempo real
-journalctl -u sensor-ia-nids -f
-
-# Deshabilitar el arranque automático
-sudo systemctl disable sensor-ia-nids
-```
-
----
-
-## Contenido del Paquete
-
-```
-sensor_ia_fisi/
-├── README.md                          ← Este archivo
-├── install.sh                         ← Instalador (ejecutar con sudo)
-├── requirements.txt                   ← Dependencias Python
-├── sensor/
-│   ├── flow_monitor.py                ← Captura y análisis en tiempo real
-│   ├── ensemble_predictor.py          ← Lógica del modelo Ensemble IA
-│   └── models/
-│       ├── eif_model.pkl              ← Extended Isolation Forest
-│       ├── lof_model.pkl              ← Local Outlier Factor
-│       ├── autoencoder.pt             ← Autoencoder (PyTorch)
-│       ├── scaler.pkl                 ← Normalizador de características
-│       ├── pca.pkl                    ← Reducción de dimensionalidad
-│       └── encoders.pkl               ← Codificadores de variables categóricas
-└── wazuh_manager_config/
-    ├── custom_decoder.xml             ← INSTALAR en el Wazuh Manager FISI
-    └── custom_rules.xml               ← INSTALAR en el Wazuh Manager FISI
-```
-
----
-
-## Soporte
-
-Para consultas técnicas, contactar al autor de la tesis.
+Los modelos candidatos y los datasets de entrenamiento no forman parte del despliegue.
+El directorio `sensor/models/` contiene únicamente el modelo promovido y congelado.

@@ -1,0 +1,36 @@
+{
+  "frozen_at_utc": "2026-10-12T03:53:18.942536+00:00",
+  "status": "frozen_for_evaluation",
+  "model_version": "nfstream-native-ensemble-v4-60s",
+  "schema_version": 4,
+  "feature_schema_hash": "807d3b80def40ebb0b4bf26d16c3ad4109c668253c91c4d0fdaee4cdbfceb21e",
+  "threshold": 0.9343915343915343,
+  "weights": {
+    "w_if": 0.3333333333333333,
+    "w_ae": 0.3333333333333333,
+    "w_lof": 0.3333333333333333
+  },
+  "target_fpr": 0.02,
+  "split": {
+    "strategy": "chronological 70/15/15",
+    "train_rows": 2520,
+    "validation_rows": 540,
+    "test_rows": 540
+  },
+  "model_files_sha256": {
+    "autoencoder.pt": "98ff3996bc371186d480161f4c2d5de7de69cfd63750147f05595b394ae78356",
+    "eif_model.pkl": "f120d40a0cc17dc7a261352da8d4003964b27242b100855a07c8366bb4ce639e",
+    "encoders.pkl": "dab6cbdabd6054dcd483ad90842fcb1c71887ca86f12a67492655ec7efdcbe80",
+    "lof_model.pkl": "49cf02f835918a3566634f50b7e520eae2d165ed82e5af3dbe73b6f18bae8673",
+    "meta.json": "b19f09d94e2fc6d5eb6842cae4e80547cce64f3d5c2d1f51284f5e43a8b16604",
+    "pca.pkl": "d5fd4b33cf9f7a0b8c5a2c2f2e35e95b5c68352e8ede528af7e725f6168abd63",
+    "scaler.pkl": "7ecd5b51e7f123e38fd7b2f5191dd664bd84d72cad3127f2dbc150b5b0f4986c",
+    "score_reference.npz": "940b46d3ee9d703a9bd6aab0a76bc933f4bf17905ecdf7db6ab4271dfd48bca8",
+    "training_report.json": "b19f09d94e2fc6d5eb6842cae4e80547cce64f3d5c2d1f51284f5e43a8b16604"
+  },
+  "training_evidence": {
+    "native_flows_chronological_sha256": "4381705cf680b9bb36f81a499c9b47ef267d91070132ebd58817755163cd3a71",
+    "capture_pcap_sha256": "5a19a1ab4395326a31fe81c7c14daf417c4329a823064f6a17229b169b24dd83"
+  },
+  "policy": "No retraining, recalibration, threshold or weight changes during evaluation."
+}

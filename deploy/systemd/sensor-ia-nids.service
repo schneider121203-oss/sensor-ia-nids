@@ -1,0 +1,27 @@
+[Unit]
+Description=Sensor IA/NIDS v4 para FISI-UNMSM
+After=network-online.target wazuh-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sensor-nids
+Group=sensor-nids
+ExecStart=/opt/sensor-ia-nids/scripts/run_sensor.sh
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=45s
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sensor-ia-nids /var/log/ensemble
+MemoryMax=3G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

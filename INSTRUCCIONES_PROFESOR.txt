@@ -1,107 +1,47 @@
-INSTRUCCIONES DE INSTALACION - SENSOR IA NIDS
-Tesis: Sistema de Deteccion de Intrusos con Ensemble No Supervisado
-Autor: Jorge D. Salinas R. - FISI 2026
-=============================================================
+INSTALACION RESUMIDA - SENSOR IA/NIDS FISI
+==========================================
 
-DESCRIPCION
+VM recomendada
+--------------
+Ubuntu Server 22.04 LTS, 4 vCPU, 4 GB RAM y 40 GB de disco.
+Usar una NIC de gestion y una NIC dedicada al puerto SPAN. La NIC SPAN no debe
+tener DHCP, IP ni ruta predeterminada.
+
+Antes de instalar
+-----------------
+1. Solicitar al datacenter la interfaz de captura y la IP/FQDN del Wazuh Manager.
+2. Confirmar TCP/1514 y, si se usa inscripcion automatica, TCP/1515.
+3. Confirmar que el Wazuh Manager es igual o mas reciente que el agente.
+4. Ejecutar:
+
+   sudo bash scripts/preflight.sh --iface enp0s8 --wazuh-manager 192.168.10.50
+
+Instalacion
 -----------
-Este componente es un sensor de red que analiza el trafico en tiempo real
-mediante Inteligencia Artificial y envia alertas al Wazuh Manager de la
-facultad. Se instala en una maquina virtual conectada al puerto espejo
-(SPAN) del switch de la red.
+La interfaz es obligatoria y nunca se autodetecta:
 
+   sudo bash install.sh \
+     --iface enp0s8 \
+     --wazuh-manager 192.168.10.50 \
+     --agent-name sensor-ia-nids-fisi
 
-REQUISITOS DE LA MAQUINA VIRTUAL
----------------------------------
-- Sistema operativo: Ubuntu 22.04 LTS
-- CPU: 2 nucleos minimo (4 recomendado)
-- RAM: 2 GB minimo (4 GB recomendado)
-- Disco: 20 GB libres
-- Red: 1 interfaz conectada al puerto espejo del switch
-- Acceso a internet: requerido solo durante la instalacion
+Si el agente Wazuh ya fue instalado por la facultad, agregar
+--skip-wazuh-install. El instalador puede ejecutarse nuevamente sin eliminar
+evidencia.
 
+Wazuh Manager
+-------------
+El administrador debe comprobar que los IDs 110001-110004 esten libres,
+copiar wazuh_manager_config/custom_rules.xml al directorio de reglas, ejecutar
+wazuh-analysisd -t y reiniciar el manager solo en una ventana autorizada.
+No se requiere decoder personalizado: el agente usa log_format=json.
 
-PASO 1 - EN EL SERVIDOR WAZUH MANAGER DE LA FISI
---------------------------------------------------
-Copiar los dos archivos de la carpeta "wazuh_manager_config" al servidor
-donde esta instalado el Wazuh Manager de la facultad.
+Verificacion
+------------
+   sudo bash scripts/verify_deployment.sh
+   sudo systemctl status sensor-ia-nids wazuh-agent
+   sudo journalctl -u sensor-ia-nids -f
+   sudo tail -f /var/log/ensemble/alerts.json
 
-En ese servidor ejecutar:
-
-    sudo cp custom_decoder.xml /var/ossec/etc/decoders/
-    sudo cp custom_rules.xml   /var/ossec/etc/rules/
-    sudo /var/ossec/bin/wazuh-analysisd -t
-    sudo /var/ossec/bin/wazuh-control restart
-
-Que hace cada archivo:
-- custom_decoder.xml : permite a Wazuh leer el formato JSON del sensor
-- custom_rules.xml   : define los niveles de alerta (IDs 100001 al 100005)
-
-Este paso solo se hace una vez.
-
-
-PASO 2 - EN LA MAQUINA VIRTUAL DEL SENSOR
-------------------------------------------
-Clonar el repositorio del proyecto (requiere internet):
-
-    git clone https://github.com/schneider121203-oss/sensor-ia-nids.git
-    cd sensor-ia-nids
-
-Ejecutar el instalador pasando la IP del Wazuh Manager de la FISI:
-
-    sudo bash install.sh --wazuh-ip <IP_DEL_WAZUH_MANAGER>
-
-Ejemplo:
-
-    sudo bash install.sh --wazuh-ip 192.168.10.50
-
-Si la interfaz de red no se detecta automaticamente, indicarla con:
-
-    sudo bash install.sh --wazuh-ip 192.168.10.50 --iface eth1
-
-El instalador hace lo siguiente de forma automatica:
-- Instala las dependencias del sistema
-- Instala las librerias de Python para la IA
-- Instala el Wazuh Agent 4.9.2 apuntando al Manager indicado
-- Configura el agente para leer las alertas de la IA
-- Crea un servicio del sistema que arranca automaticamente con el servidor
-
-
-PASO 3 - VERIFICAR QUE FUNCIONA
----------------------------------
-Revisar el estado del sensor:
-
-    sudo systemctl status sensor-ia-nids
-
-Ver los mensajes del sensor en tiempo real:
-
-    journalctl -u sensor-ia-nids -f
-
-Ver los JSON de alertas que se envian al Wazuh:
-
-    tail -f /var/log/ensemble/alerts.json
-
-En el Dashboard de Wazuh, el agente aparecera como "sensor-ia-nids-jds"
-con estado Active. Las alertas de la IA se veran bajo las reglas con
-ID 100001 al 100005.
-
-
-GESTION DEL SERVICIO
----------------------
-Iniciar el sensor    :  sudo systemctl start   sensor-ia-nids
-Detener el sensor    :  sudo systemctl stop    sensor-ia-nids
-Reiniciar el sensor  :  sudo systemctl restart sensor-ia-nids
-
-
-NIVELES DE ALERTA EN WAZUH
----------------------------
-Regla 100001 - Nivel  5 : Alerta base del sensor IA
-Regla 100002 - Nivel  7 : Trafico sospechoso (score >= 0.70)
-Regla 100003 - Nivel 10 : Posible ataque detectado (score >= 0.85)
-Regla 100004 - Nivel 12 : Ataque con score alto (score >= 0.95)
-Regla 100005 - Nivel 13 : Intento de evasion adversaria detectado
-
-
-CONTACTO
----------
-Para consultas tecnicas sobre el componente, contactar al autor de la tesis.
+El sensor usa el modelo v4 congelado, funciona solo con CPU y no bloquea
+trafico. Los flujos completos permanecen localmente; Wazuh recibe alertas JSON.

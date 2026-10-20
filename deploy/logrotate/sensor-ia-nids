@@ -1,0 +1,11 @@
+/var/log/ensemble/*.json /var/lib/sensor-ia-nids/*.ndjson /var/lib/sensor-ia-nids/*.json {
+    daily
+    rotate 7
+    maxsize 250M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0640 sensor-nids sensor-nids
+}
